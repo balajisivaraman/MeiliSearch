@@ -6,8 +6,10 @@ pub mod helpers;
 pub mod models;
 pub mod option;
 pub mod routes;
+pub mod analytics;
 
 pub use self::data::Data;
+pub use option::Opt;
 use self::error::json_error_handler;
 use actix_http::Error;
 use actix_service::ServiceFactory;

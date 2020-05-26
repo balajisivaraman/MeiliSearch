@@ -1,13 +1,92 @@
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{error, thread};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use log::error;
 use serde::Serialize;
 use serde_qs as qs;
 use siphasher::sip::SipHasher;
+use walkdir::WalkDir;
+
+use crate::Data;
+use crate::Opt;
 
 const AMPLITUDE_API_KEY: &str = "f7fba398780e06d8fe6666a9be7e3d47";
+
+#[derive(Debug, Serialize)]
+struct IndexStats {
+    number_of_documents: u64,
+    is_indexing: bool,
+    fields: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct EventProperties {
+    database_size: u64,
+    last_update_timestamp: Option<i64>, //timestamp
+    indexes: HashMap<String, IndexStats>,
+}
+
+impl EventProperties {
+    fn from(data: Data) -> Result<EventProperties, Box<dyn error::Error>> {
+        let mut index_list = HashMap::new();
+
+        let reader = data.db.main_read_txn()?;
+        let update_reader = data.db.update_read_txn()?;
+
+        let indexes_set = data.db.indexes_uids();
+        for index_uid in indexes_set {
+            let index = data.db.open_index(&index_uid);
+            match index {
+                Some(index) => {
+                    let number_of_documents = index.main.number_of_documents(&reader)?;
+                    let fields = index.main.fields_frequency(&reader)?
+                        .unwrap_or_default()
+                        .keys()
+                        .cloned()
+                        .into_iter()
+                        .collect();
+                    let is_indexing = data.is_indexing(&update_reader, &index_uid)?.unwrap_or_default();
+
+                    let response = IndexStats {
+                        number_of_documents,
+                        is_indexing,
+                        fields,
+                    };
+                    index_list.insert(index_uid, response);
+                }
+                None => error!(
+                    "Index {:?} is referenced in the indexes list but cannot be found",
+                    index_uid
+                ),
+            }
+        }
+
+        let database_size = WalkDir::new(&data.db_path)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.metadata().ok())
+            .filter(|metadata| metadata.is_file())
+            .fold(0, |acc, m| acc + m.len());
+
+        let last_update_timestamp = data.last_update(&reader)?.map(|u| u.timestamp());
+
+        Ok(EventProperties {
+            database_size,
+            last_update_timestamp,
+            indexes: index_list,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct UserProperties<'a> {
+    env: &'a str,
+    start_since_days: u64,
+    user_email: Option<String>,
+    server_provider: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 struct Event<'a> {
@@ -15,6 +94,9 @@ struct Event<'a> {
     event_type: &'a str,
     device_id: &'a str,
     time: u64,
+    app_version: &'a str,
+    user_properties: UserProperties<'a>,
+    event_properties: Option<EventProperties>,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,7 +105,7 @@ struct AmplitudeRequest<'a> {
     event: &'a str,
 }
 
-pub fn analytics_sender() {
+pub fn analytics_sender(data: Data, opt: Opt) {
     let username = whoami::username();
     let hostname = whoami::hostname();
     let platform = whoami::platform();
@@ -36,6 +118,7 @@ pub fn analytics_sender() {
 
     let uid = format!("{:X}", hash);
     let platform = platform.to_string();
+    let first_start = Instant::now();
 
     loop {
         let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
@@ -43,12 +126,27 @@ pub fn analytics_sender() {
         let device_id = &platform;
         let time = n.as_secs();
         let event_type = "runtime_tick";
+        let elapsed_since_start = first_start.elapsed().as_secs() / 86_400; // One day
+        let event_properties = EventProperties::from(data.clone()).ok();
+        let app_version = env!("CARGO_PKG_VERSION").to_string();
+        let app_version = app_version.as_str();
+        let user_email = std::env::var("MEILI_USER_EMAIL").ok();
+        let server_provider = std::env::var("MEILI_SERVER_PROVIDER").ok();
+        let user_properties = UserProperties {
+            env: &opt.env,
+            start_since_days: elapsed_since_start,
+            user_email,
+            server_provider,
+        };
 
         let event = Event {
             user_id,
             event_type,
             device_id,
             time,
+            app_version,
+            user_properties,
+            event_properties
         };
         let event = serde_json::to_string(&event).unwrap();
 
@@ -64,6 +162,6 @@ pub fn analytics_sender() {
             error!("Unsuccessful call to Amplitude: {}", body);
         }
 
-        thread::sleep(Duration::from_secs(86_400)) // one day
+        thread::sleep(Duration::from_secs(3600)) // one hour
     }
 }
