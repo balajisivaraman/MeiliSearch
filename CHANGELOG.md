@@ -18,6 +18,7 @@
   - Update sentry features to remove openssl (#702)
   - Add SSL support (#669)
   - Rename fieldsFrequency into fieldsDistribution in stats (#719)
+  - Add telemetry (#720)
 
 ## v0.10.1
 
