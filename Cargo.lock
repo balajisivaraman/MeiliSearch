@@ -619,9 +619,9 @@ dependencies = [
 
 [[package]]
 name = "compact_arena"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ab08c5bed92075075d5db5149887a477b2dc0318c40882a0dfbd34315ac6141"
+checksum = "5242c6ffe360608bbe43daef80990a7824c8b588e8db617f4e13054df3e6ef08"
 
 [[package]]
 name = "const_fn"
